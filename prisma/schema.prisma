@@ -1,0 +1,198 @@
+// schema.prisma
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+
+}
+
+
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      UserRole @default(CUSTOMER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  isActive  Boolean  @default(true)
+
+  // Relations
+  createdBy       User?        @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdById     String?
+  createdUsers    User[]       @relation("UserCreatedBy")
+  createdCategories Category[]
+  createdProducts Product[]
+  sales           Sale[]
+  inventoryLogs   InventoryLog[]
+  lastLogin       DateTime?
+
+  @@map("users")
+}
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  isActive    Boolean  @default(true)
+
+  // Relations
+  products    Product[]
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdById String
+
+  @@map("categories")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  price       Decimal
+  costPrice   Decimal
+  sku         String   @unique
+  barcode     String?  @unique
+  quantity    Int
+  minStock    Int      @default(10)
+  maxStock    Int      @default(100)
+  status      ProductStatus @default(UNSOLD)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  isActive    Boolean  @default(true)
+
+  // Relations
+  category        Category       @relation(fields: [categoryId], references: [id])
+  categoryId      String
+  createdBy       User           @relation(fields: [createdById], references: [id])
+  createdById     String
+  saleItems       SaleItem[]
+  inventoryLogs   InventoryLog[]
+
+  // Additional fields
+  imageUrl    String?
+  weight      Decimal?
+  dimensions  String?
+
+  @@map("products")
+}
+
+model Sale {
+  id          String   @id @default(cuid())
+  saleNumber  String   @unique
+  totalAmount Decimal
+  taxAmount   Decimal  @default(0)
+  discount    Decimal  @default(0)
+  finalAmount Decimal
+  paymentMethod PaymentMethod
+  status      SaleStatus @default(COMPLETED)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  items         SaleItem[]
+  staff         User     @relation(fields: [staffId], references: [id])
+  staffId       String
+  customer      Customer? @relation(fields: [customerId], references: [id])
+  customerId    String?
+  inventoryLogs InventoryLog[]
+
+  @@map("sales")
+}
+
+model SaleItem {
+  id        String   @id @default(cuid())
+  quantity  Int
+  unitPrice Decimal
+  totalPrice Decimal
+  createdAt DateTime @default(now())
+
+  // Relations
+  sale      Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  saleId    String
+  product   Product @relation(fields: [productId], references: [id])
+  productId String
+
+  @@unique([saleId, productId])
+  @@map("sale_items")
+}
+
+model Customer {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?  @unique
+  phone     String?
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  sales      Sale[]
+
+  @@map("customers")
+}
+
+model InventoryLog {
+  id          String      @id @default(cuid())
+  type        InventoryLogType
+  quantity    Int
+  previousStock Int
+  newStock    Int
+  reason      String?
+  createdAt   DateTime    @default(now())
+
+  // Relations
+  product       Product     @relation(fields: [productId], references: [id])
+  productId     String
+  performedBy   User        @relation(fields: [performedById], references: [id])
+  performedById String
+  sale          Sale?       @relation(fields: [saleId], references: [id])
+  saleId        String?
+
+  @@map("inventory_logs")
+}
+
+// Enums
+enum UserRole {
+  SUPERADMIN
+  ADMIN
+  STAFF
+  CUSTOMER
+}
+
+enum ProductStatus {
+  UNSOLD
+  SOLD
+  DAMAGED
+  RETURNED
+  RESERVED
+}
+
+enum SaleStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  DIGITAL_WALLET
+  BANK_TRANSFER
+}
+
+enum InventoryLogType {
+  STOCK_IN
+  STOCK_OUT
+  SALE
+  RETURN
+  DAMAGE
+  ADJUSTMENT
+}
