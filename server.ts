@@ -6,7 +6,6 @@ app.get("/", (req, res) => {
   res.send("Server is Running!!!");
 });
 
-console.log("departmentStore1");
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
