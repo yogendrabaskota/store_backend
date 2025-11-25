@@ -31,6 +31,7 @@ model User {
   sales           Sale[]
   inventoryLogs   InventoryLog[]
   lastLogin       DateTime?
+  refreshTokens   RefreshToken[]
 
   @@map("users")
 }
@@ -157,6 +158,17 @@ model InventoryLog {
 
   @@map("inventory_logs")
 }
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+}
+
 
 // Enums
 enum UserRole {

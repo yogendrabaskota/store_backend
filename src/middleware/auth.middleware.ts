@@ -9,6 +9,7 @@ export interface AuthRequest extends Request {
     id: string;
     email: string;
     name: string;
+    password: string;
     role: UserRole;
     createdAt: Date;
     updatedAt: Date;

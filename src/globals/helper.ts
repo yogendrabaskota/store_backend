@@ -5,7 +5,6 @@ export async function isUserExist(email: string): Promise<boolean> {
   const user = await prisma.user.findUnique({
     where: { email },
   });
-
   return !!user;
 }
 
@@ -21,3 +20,10 @@ export function sendResponse(
     data,
   });
 }
+
+// In your user service or repository
+export const getUserByEmail = async (email: string) => {
+  return await prisma.user.findUnique({
+    where: { email },
+  });
+};
