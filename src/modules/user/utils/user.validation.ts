@@ -17,13 +17,6 @@ export const registerUserSchema = z
       .regex(/[\W_]/, "Password must contain at least one special character")
       .min(6, "Password must be at least 6 characters")
       .max(100, "Password must be less than 100 characters"),
-
-    phone: z
-      .string()
-      .optional()
-      .refine((val) => !val || val.length >= 10, {
-        message: "Phone number must be at least 10 digits",
-      }),
   })
   .refine((data) => data.name && data.name.trim().length > 0, {
     message: "Name is required",

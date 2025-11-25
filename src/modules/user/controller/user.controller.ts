@@ -89,6 +89,89 @@ class User {
       return sendResponse(res, 500, "Something went wrong");
     }
   }
+
+  async getAllUser(req: Request, res: Response): Promise<Response> {
+    try {
+      // Get pagination parameters from query
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const skip = (page - 1) * limit;
+
+      // Fetch users with pagination
+      const [users, totalCount] = await Promise.all([
+        prisma.user.findMany({
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            isActive: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          skip,
+          take: limit,
+          orderBy: {
+            createdAt: "desc",
+          },
+        }),
+        prisma.user.count(),
+      ]);
+
+      if (!users || users.length === 0) {
+        return sendResponse(res, 404, "No users found");
+      }
+
+      return sendResponse(res, 200, "Users retrieved successfully", {
+        users,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(totalCount / limit),
+          totalUsers: totalCount,
+          limit,
+        },
+      });
+    } catch (err) {
+      console.error("Get all users error:", err);
+      return sendResponse(res, 500, "Something went wrong");
+    }
+  }
+
+  async getUserById(req: Request, res: Response): Promise<Response> {
+    try {
+      const { id } = req.params;
+
+      // Validate if id is provided
+      if (!id) {
+        return sendResponse(res, 400, "User ID is required");
+      }
+
+      // Fetch user by ID
+      const user = await prisma.user.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+          // Exclude password from response
+        },
+      });
+
+      // Check if user exists
+      if (!user) {
+        return sendResponse(res, 404, "User not found");
+      }
+
+      return sendResponse(res, 200, "User retrieved successfully", { user });
+    } catch (err) {
+      console.error("Get user by ID error:", err);
+      return sendResponse(res, 500, "Something went wrong");
+    }
+  }
 }
 
 export default new User();
