@@ -39,5 +39,36 @@ export const loginUserSchema = z.object({
     .max(100, "Password must be less than 100 characters"),
 });
 
+export const updateProfileSchema = z
+  .object({
+    name: z
+      .string()
+      .min(2, "Name must be at least 2 characters")
+      .max(50, "Name must be less than 50 characters")
+      .optional(),
+
+    email: z.string().email({ message: "Invalid email format" }).optional(),
+  })
+  .refine((data) => data.name || data.email, {
+    message: "At least one field (name or email) must be provided for update",
+    path: ["name"], // Points to name field in error
+  })
+  .refine((data) => !data.name || (data.name && data.name.trim().length > 0), {
+    message: "Name cannot be empty",
+    path: ["name"],
+  })
+  .refine(
+    (data) => !data.email || (data.email && data.email.trim().length > 0),
+    {
+      message: "Email cannot be empty",
+      path: ["email"],
+    }
+  )
+  .refine((data) => !data.name || data.name.trim().length >= 2, {
+    message: "Name must be at least 2 characters",
+    path: ["name"],
+  });
+
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 export type RegisterUserInput = z.infer<typeof registerUserSchema>;
 export type LoginUserInput = z.infer<typeof loginUserSchema>;
