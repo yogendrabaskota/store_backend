@@ -40,12 +40,13 @@ class User {
       );
       return;
     }
+    const hashedPassword = await bcrypt.hash(password, 10);
 
     const newUser = await prisma.user.create({
       data: {
         name,
         email,
-        password,
+        password: hashedPassword,
         role,
       },
     });
@@ -70,6 +71,7 @@ class User {
 
       //Check password
       const isMatch = await bcrypt.compare(password, user.password);
+      console.log(isMatch);
       if (!isMatch) {
         return sendResponse(res, 400, "Incorrect password");
       }

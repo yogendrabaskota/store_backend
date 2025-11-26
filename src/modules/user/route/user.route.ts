@@ -12,19 +12,11 @@ const router = express.Router();
 
 router
   .route("/register")
-  .post(
-    authMiddleware.isAuthenticated,
-    validate(registerUserSchema),
-    userController.registerUser
-  );
+  .post(validate(registerUserSchema), userController.registerUser);
 
 router
   .route("/login")
-  .post(
-    authMiddleware.isAuthenticated,
-    validate(loginUserSchema),
-    userController.loginUser
-  );
+  .post(validate(loginUserSchema), userController.loginUser);
 
 router
   .route("/")

@@ -9,6 +9,12 @@ export const registerUserSchema = z
 
     email: z.string().email({ message: "Invalid email format" }),
 
+    role: z
+      .enum(["CUSTOMER", "ADMIN", "SUPERADMIN", "STAFF"])
+      .optional()
+      .default("CUSTOMER"),
+    // role: z.literal("CUSTOMER").optional().default("CUSTOMER"),
+
     password: z
       .string()
       .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
