@@ -686,6 +686,170 @@ class ProductController {
       return sendResponse(res, 500, "Internal server error");
     }
   }
+
+  async searchProducts(req: AuthRequest, res: Response): Promise<Response> {
+    try {
+      const {
+        q: searchQuery,
+        page = 1,
+        limit = 20,
+        inStock = "true",
+      } = req.query;
+
+      if (!searchQuery?.toString().trim()) {
+        return sendResponse(res, 400, "Search query is required");
+      }
+
+      const searchTerm = searchQuery.toString().trim();
+      if (searchTerm.length < 2) {
+        return sendResponse(
+          res,
+          400,
+          "Search term must be at least 2 characters long"
+        );
+      }
+
+      const pageNum = Math.max(1, parseInt(page as string));
+      const limitNum = Math.min(50, Math.max(1, parseInt(limit as string)));
+      const skip = (pageNum - 1) * limitNum;
+
+      const where: Prisma.ProductWhereInput = {
+        isActive: true,
+        OR: [
+          { name: { contains: searchTerm, mode: "insensitive" } },
+          { description: { contains: searchTerm, mode: "insensitive" } },
+          { sku: { contains: searchTerm, mode: "insensitive" } },
+        ],
+      };
+
+      if (inStock === "true") {
+        where.quantity = { gt: 0 };
+      }
+
+      const [products, totalCount] = await Promise.all([
+        prisma.product.findMany({
+          where,
+          skip,
+          take: limitNum,
+          //   orderBy: [
+          //     {
+          //       _relevance: {
+          //         fields: ["name"],
+          //         search: searchTerm,
+          //         sort: "desc",
+          //       },
+          //     },
+          //     { createdAt: "desc" },
+          //   ],
+
+          orderBy: { createdAt: "desc" },
+          select: this.getProductSelectFields(true), // Minimal fields for search
+        }),
+        prisma.product.count({ where }),
+      ]);
+
+      const totalPages = Math.ceil(totalCount / limitNum);
+
+      const responseData = {
+        products,
+        searchMeta: {
+          query: searchTerm,
+          totalResults: totalCount,
+        },
+        pagination: {
+          currentPage: pageNum,
+          totalPages,
+          hasNext: pageNum < totalPages,
+          hasPrev: pageNum > 1,
+          limit: limitNum,
+        },
+      };
+
+      return sendResponse(
+        res,
+        200,
+        "Search completed successfully",
+        responseData
+      );
+    } catch (error) {
+      console.error("Search products error:", error);
+      return sendResponse(res, 500, "Internal server error");
+    }
+  }
+
+  async getLowStockProducts(
+    req: AuthRequest,
+    res: Response
+  ): Promise<Response> {
+    try {
+      const { page = 1, limit = 20 } = req.query;
+
+      const pageNum = Math.max(1, parseInt(page as string));
+      const limitNum = Math.min(50, Math.max(1, parseInt(limit as string)));
+      const skip = (pageNum - 1) * limitNum;
+
+      // -------------------------------
+      // RAW QUERY (Because column-to-column comparison is needed)
+      // -------------------------------
+
+      const products = await prisma.$queryRawUnsafe<any[]>(`
+      SELECT *
+      FROM "Product"
+      WHERE "isActive" = true
+      AND "quantity" <= "minStock"
+      ORDER BY "quantity" ASC
+      OFFSET ${skip}
+      LIMIT ${limitNum}
+    `);
+
+      const totalCountResult = await prisma.$queryRawUnsafe<
+        { count: number }[]
+      >(`
+      SELECT COUNT(*)::int AS count
+      FROM "Product"
+      WHERE "isActive" = true
+      AND "quantity" <= "minStock"
+    `);
+      const totalCount = totalCountResult[0]?.count || 0;
+
+      const outOfStockResult = await prisma.$queryRawUnsafe<
+        { count: number }[]
+      >(`
+      SELECT COUNT(*)::int AS count
+      FROM "Product"
+      WHERE "isActive" = true
+      AND "quantity" = 0
+    `);
+      const outOfStock = outOfStockResult[0]?.count || 0;
+
+      const totalPages = Math.ceil(totalCount / limitNum);
+
+      const responseData = {
+        products,
+        summary: {
+          totalLowStock: totalCount,
+          outOfStock,
+        },
+        pagination: {
+          currentPage: pageNum,
+          totalPages,
+          hasNext: pageNum < totalPages,
+          hasPrev: pageNum > 1,
+          limit: limitNum,
+        },
+      };
+
+      return sendResponse(
+        res,
+        200,
+        "Low stock products retrieved successfully",
+        responseData
+      );
+    } catch (error) {
+      console.error("Get low stock products error:", error);
+      return sendResponse(res, 500, "Internal server error");
+    }
+  }
 }
 
 export default new ProductController();

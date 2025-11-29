@@ -37,4 +37,16 @@ router
     productController.updateStock
   );
 
+router.route("products/search").get(
+  authMiddleware.isAuthenticated,
+
+  productController.searchProducts
+);
+
+router.route("/products/low-stock").get(
+  authMiddleware.isAuthenticated,
+
+  productController.getLowStockProducts
+);
+
 export default router;
