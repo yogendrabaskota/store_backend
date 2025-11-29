@@ -7,6 +7,7 @@ import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 
 import userRoute from "./modules/user/route/user.route";
+import categoryRoute from "./modules/category/route/category.route";
 
 // Load environment variables
 dotenv.config();
@@ -51,6 +52,7 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 // ---------------------------
 app.use("/api/users", userRoute);
+app.use("/api/v1", categoryRoute);
 
 // ---------------------------
 // Default error handler
