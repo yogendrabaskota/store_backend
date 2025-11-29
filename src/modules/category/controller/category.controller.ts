@@ -430,6 +430,318 @@ class CategoryController {
       return sendResponse(res, 500, "Internal server error");
     }
   }
+
+  //  Activate or deactivate category
+
+  async activateCategory(req: AuthRequest, res: Response): Promise<Response> {
+    try {
+      const { id } = req.params;
+      const { isActive } = req.body;
+      const userId = req.user?.id;
+
+      if (!id) {
+        return sendResponse(res, 400, "Category ID is required");
+      }
+      if (!userId) {
+        return sendResponse(res, 400, "Authentication required");
+      }
+
+      if (typeof isActive !== "boolean") {
+        return sendResponse(res, 400, "isActive must be a boolean value");
+      }
+
+      // Check if category exists
+      const existingCategory = await prisma.category.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          isActive: true,
+          name: true,
+        },
+      });
+
+      if (!existingCategory) {
+        return sendResponse(res, 404, "Category not found");
+      }
+
+      // No change needed if already in desired state
+      if (existingCategory.isActive === isActive) {
+        const message = isActive
+          ? "Category is already active"
+          : "Category is already deactivated";
+        return sendResponse(res, 200, message, {
+          id: existingCategory.id,
+          name: existingCategory.name,
+          isActive,
+        });
+      }
+
+      // Update category active status
+      const updatedCategory = await prisma.category.update({
+        where: { id },
+        data: {
+          isActive,
+          updatedAt: new Date(),
+        },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+          _count: {
+            select: {
+              products: true,
+            },
+          },
+        },
+      });
+
+      const message = isActive
+        ? "Category activated successfully"
+        : "Category deactivated successfully";
+      return sendResponse(res, 200, message, updatedCategory);
+    } catch (error) {
+      console.error("Activate category error:", error);
+
+      if (error instanceof Prisma.PrismaClientKnownRequestError) {
+        if (error.code === "P2025") {
+          return sendResponse(res, 404, "Category not found");
+        }
+      }
+
+      return sendResponse(res, 500, "Internal server error");
+    }
+  }
+
+  // Search categories with advanced filtering and pagination
+
+  async searchCategories(req: AuthRequest, res: Response): Promise<Response> {
+    try {
+      const {
+        q: searchQuery,
+        page = 1,
+        limit = 20,
+        sortBy = "relevance",
+        sortOrder = "desc",
+        isActive,
+        includeProducts = "false",
+      } = req.query;
+
+      // Validate search query
+      if (!searchQuery?.toString().trim()) {
+        return sendResponse(res, 400, "Search query is required");
+      }
+
+      const searchTerm = searchQuery.toString().trim();
+
+      // Validate search term length
+      if (searchTerm.length < 2) {
+        return sendResponse(
+          res,
+          400,
+          "Search term must be at least 2 characters long"
+        );
+      }
+
+      const pageNum = Math.max(1, parseInt(page as string));
+      const limitNum = Math.min(50, Math.max(1, parseInt(limit as string))); // More conservative limit for search
+      const skip = (pageNum - 1) * limitNum;
+
+      // Build where clause with search relevance
+      const where: Prisma.CategoryWhereInput = {};
+
+      // Active filter
+      if (isActive !== undefined) {
+        where.isActive = isActive === "true";
+      }
+
+      // Search conditions with relevance scoring
+      where.OR = [
+        {
+          name: {
+            contains: searchTerm,
+            mode: "insensitive",
+          },
+        },
+        {
+          description: {
+            contains: searchTerm,
+            mode: "insensitive",
+          },
+        },
+      ];
+
+      let orderBy: Prisma.CategoryOrderByWithRelationInput = {};
+
+      if (sortBy === "relevance") {
+        // Basic relevance scoring: exact match in name first, then description
+        // orderBy = [
+        //   {
+        //     // Prioritize exact name matches
+        //     _relevance: {
+        //       fields: ["name"],
+        //       search: searchTerm,
+        //       sort: "desc",
+        //     },
+        //   },
+        //   {
+        //     // Then by description matches
+        //     _relevance: {
+        //       fields: ["description"],
+        //       search: searchTerm,
+        //       sort: "desc",
+        //     },
+        //   },
+        //   {
+        //     // Finally by creation date
+        //     createdAt: "desc",
+        //   },
+        // ];
+        orderBy = {
+          //   createdAt: "desc",
+          name: "asc",
+        };
+      } else {
+        orderBy = {
+          [sortBy as string]: sortOrder,
+        };
+      }
+
+      // Base select fields
+      const selectFields: Prisma.CategorySelect = {
+        id: true,
+        name: true,
+        description: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: {
+          select: {
+            products: true,
+          },
+        },
+      };
+
+      // Conditionally include products count with active filter
+      if (includeProducts === "true") {
+        selectFields._count = {
+          select: {
+            products: {
+              where: { isActive: true },
+            },
+          },
+        };
+      }
+
+      // Execute parallel queries for better performance
+      const [categories, totalCount, exactMatch] = await Promise.all([
+        // Main search results
+        prisma.category.findMany({
+          where,
+          skip,
+          take: limitNum,
+          orderBy,
+          select: selectFields,
+        }),
+
+        // Total count for pagination
+        prisma.category.count({ where }),
+
+        // Check for exact match (useful for suggestions)
+        prisma.category.findFirst({
+          where: {
+            name: {
+              equals: searchTerm,
+              mode: "insensitive",
+            },
+            ...(isActive !== undefined
+              ? { isActive: isActive === "true" }
+              : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+          },
+        }),
+      ]);
+
+      const totalPages = Math.ceil(totalCount / limitNum);
+      const hasNext = pageNum < totalPages;
+      const hasPrev = pageNum > 1;
+
+      const responseData = {
+        categories,
+        searchMeta: {
+          query: searchTerm,
+          totalResults: totalCount,
+          exactMatch: exactMatch
+            ? {
+                id: exactMatch.id,
+                name: exactMatch.name,
+              }
+            : null,
+          suggestions:
+            totalCount === 0
+              ? await this.generateSearchSuggestions(searchTerm)
+              : [],
+        },
+        pagination: {
+          currentPage: pageNum,
+          totalPages,
+          hasNext,
+          hasPrev,
+          limit: limitNum,
+        },
+      };
+
+      return sendResponse(
+        res,
+        200,
+        "Search completed successfully",
+        responseData
+      );
+    } catch (error) {
+      console.error("Search categories error:", error);
+      return sendResponse(res, 500, "Internal server error");
+    }
+  }
+
+  /**
+   * Generate search suggestions when no results found
+   */
+  private async generateSearchSuggestions(
+    searchTerm: string
+  ): Promise<string[]> {
+    try {
+      // Find similar category names for suggestions
+      const similarCategories = await prisma.category.findMany({
+        where: {
+          OR: [
+            {
+              name: {
+                contains: searchTerm.substring(0, 3), // Partial match for suggestions
+                mode: "insensitive",
+              },
+            },
+          ],
+        },
+        select: {
+          name: true,
+        },
+        take: 5,
+        orderBy: {
+          name: "asc",
+        },
+      });
+
+      return similarCategories.map((cat) => cat.name);
+    } catch (error) {
+      console.error("Generate suggestions error:", error);
+      return [];
+    }
+  }
 }
 
 export default new CategoryController();
