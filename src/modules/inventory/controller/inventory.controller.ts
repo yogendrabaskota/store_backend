@@ -1,7 +1,5 @@
 import { Response } from "express";
-// import { Prisma, InventoryLogType, SaleStatus } from "../../generated/prisma";
-// import { AuthRequest } from "../../middleware/auth.middleware";
-// import { sendResponse } from "../../globals/helper";
+
 import prisma from "../../../config/prisma";
 import { InventoryLogType, Prisma } from "../../../generated/prisma";
 import { AuthRequest } from "../../../middleware/auth.middleware";

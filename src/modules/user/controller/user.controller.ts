@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../../../config/prisma";
 import {
+  createAuditLog,
   getUserByEmail,
   isUserExist,
   sendResponse,
@@ -50,6 +51,17 @@ class User {
         role,
       },
     });
+    await createAuditLog(
+      "SYSTEM",
+      {
+        action: "USER_REGISTER",
+        description: `New user registered: ${email} with role ${role}`,
+        resource: "User",
+        resourceId: newUser.id,
+        newData: { name, email, role },
+      },
+      req
+    );
     sendResponse(res, 201, "User Created Successfully", newUser);
   }
 
@@ -87,6 +99,16 @@ class User {
           expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         },
       });
+      await createAuditLog(
+        user.id,
+        {
+          action: "USER_LOGIN",
+          description: `User logged in successfully`,
+          resource: "User",
+          resourceId: user.id,
+        },
+        req
+      );
 
       return sendResponse(res, 200, "Login successful", {
         user: {
@@ -187,20 +209,42 @@ class User {
     }
   }
 
-  async assignUserRole(req: Request, res: Response): Promise<Response> {
+  async assignUserRole(req: AuthRequest, res: Response): Promise<Response> {
     try {
       const { id } = req.params;
       const { role } = req.body;
+      const userId = req.user?.id;
 
       // Validate inputs
       if (!id || !role) {
         return sendResponse(res, 400, "User ID and role are required");
       }
+      const existingUser = await prisma.user.findUnique({
+        where: { id },
+      });
+      if (!existingUser) {
+        return sendResponse(res, 404, "User not found");
+      }
+      const oldRole = existingUser.role;
+
       // Update user role
       const updatedUser = await prisma.user.update({
         where: { id },
         data: { role },
       });
+      await createAuditLog(
+        userId || "SYSTEM",
+        {
+          action: "USER_ROLE_UPDATE",
+          description: `Changed user role from ${oldRole} to ${role}`,
+          resource: "User",
+          resourceId: id,
+          oldData: { role: oldRole },
+          newData: { role },
+        },
+        req
+      );
+
       return sendResponse(res, 200, "User role updated successfully", {
         updatedUser,
       });
@@ -209,7 +253,7 @@ class User {
       return sendResponse(res, 500, "Something went wrong");
     }
   }
-  async deactivateUser(req: Request, res: Response): Promise<Response> {
+  async deactivateUser(req: AuthRequest, res: Response): Promise<Response> {
     try {
       const { id } = req.params;
       // Validate inputs
@@ -221,6 +265,18 @@ class User {
         where: { id },
         data: { isActive: false },
       });
+      await createAuditLog(
+        req.user?.id || "SYSTEM",
+        {
+          action: "USER_DEACTIVATE",
+          description: `Deactivated user account`,
+          resource: "User",
+          resourceId: id,
+          oldData: { isActive: true },
+          newData: { isActive: false },
+        },
+        req
+      );
       return sendResponse(res, 200, "User deactivated successfully", {
         updatedUser,
       });
@@ -229,7 +285,7 @@ class User {
       return sendResponse(res, 500, "Something went wrong");
     }
   }
-  async activateUser(req: Request, res: Response): Promise<Response> {
+  async activateUser(req: AuthRequest, res: Response): Promise<Response> {
     try {
       const { id } = req.params;
       // Validate inputs
@@ -241,6 +297,18 @@ class User {
         where: { id },
         data: { isActive: true },
       });
+      await createAuditLog(
+        req.user?.id || "SYSTEM",
+        {
+          action: "USER_ACTIVATE",
+          description: `Reactivated user account`,
+          resource: "User",
+          resourceId: id,
+          oldData: { isActive: false },
+          newData: { isActive: true },
+        },
+        req
+      );
       return sendResponse(res, 200, "User activated successfully", {
         updatedUser,
       });
@@ -351,18 +419,39 @@ class User {
     }
   }
 
-  async demoteToCustomer(req: Request, res: Response): Promise<Response> {
+  async demoteToCustomer(req: AuthRequest, res: Response): Promise<Response> {
     try {
       const { id } = req.params;
       // Validate inputs
       if (!id) {
         return sendResponse(res, 400, "User ID is required");
       }
+      const existingUser = await prisma.user.findUnique({
+        where: { id },
+      });
       // Demote admin to regular user
       const updatedUser = await prisma.user.update({
         where: { id },
         data: { role: "CUSTOMER" },
       });
+
+      if (!existingUser) {
+        return sendResponse(res, 404, "User not found");
+      }
+      const oldRole = existingUser.role;
+      await createAuditLog(
+        req.user?.id || "SYSTEM",
+        {
+          action: "USER_DEMOTE",
+          description: `Demoted user from ${oldRole} to CUSTOMER`,
+          resource: "User",
+          resourceId: id,
+          oldData: { role: oldRole },
+          newData: { role: "CUSTOMER" },
+        },
+        req
+      );
+
       return sendResponse(res, 200, "Admin demoted successfully", {
         updatedUser,
       });
@@ -653,6 +742,9 @@ class User {
           return sendResponse(res, 409, "Email already exists");
         }
       }
+      const oldUserData = await prisma.user.findUnique({
+        where: { id: userId },
+      });
 
       const updatedUser = await prisma.user.update({
         where: { id: userId },
@@ -668,6 +760,18 @@ class User {
         },
       });
 
+      await createAuditLog(
+        userId,
+        {
+          action: "PROFILE_UPDATE",
+          description: `Updated profile information`,
+          resource: "User",
+          resourceId: userId,
+          oldData: oldUserData, // fetch before update
+          newData: updateData,
+        },
+        req
+      );
       return sendResponse(res, 200, "Profile updated successfully", {
         user: updatedUser,
       });
@@ -775,7 +879,7 @@ class User {
     }
   }
 
-  async logout(req: Request, res: Response): Promise<Response> {
+  async logout(req: AuthRequest, res: Response): Promise<Response> {
     try {
       const userId = (req as any).user?.id;
       const token = req.headers.authorization?.replace("Bearer ", "");
@@ -800,6 +904,16 @@ class User {
           data: { lastLogin: new Date() },
         }),
       ]);
+      await createAuditLog(
+        userId,
+        {
+          action: "USER_LOGOUT",
+          description: `User logged out`,
+          resource: "User",
+          resourceId: userId,
+        },
+        req
+      );
 
       return sendResponse(res, 200, "Logged out successfully");
     } catch (err) {
