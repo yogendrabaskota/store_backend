@@ -10,6 +10,8 @@ import userRoute from "./modules/user/route/user.route";
 import categoryRoute from "./modules/category/route/category.route";
 import productRoute from "./modules/product/route/product.route";
 import inventoryRoute from "./modules/inventory/route/inventory.route";
+import saleRoute from "./modules/sale/route/sale.route";
+import auditLogRoute from "./modules/auditLog/route/auditLog.route";
 
 // Load environment variables
 dotenv.config();
@@ -54,9 +56,11 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 // ---------------------------
 app.use("/api/users", userRoute);
-app.use("/api/v1", categoryRoute);
-app.use("/api/v1", productRoute);
-app.use("/api/v1", inventoryRoute);
+app.use("/api", categoryRoute);
+app.use("/api", productRoute);
+app.use("/api", inventoryRoute);
+app.use("/api", saleRoute);
+app.use("/api", auditLogRoute);
 
 // ---------------------------
 // Default error handler

@@ -8,3 +8,12 @@ export interface AuditLogData {
   ipAddress?: string;
   userAgent?: string;
 }
+export interface AuditLogFilters {
+  action?: string;
+  resource?: string;
+  resourceId?: string;
+  userId?: string;
+  startDate?: string;
+  endDate?: string;
+  search?: string;
+}
