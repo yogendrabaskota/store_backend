@@ -515,7 +515,7 @@ class CategoryController {
     }
   }
 
-  // Search categories with advanced filtering and pagination
+  // Search categories with filtering and pagination
 
   async searchCategories(req: AuthRequest, res: Response): Promise<Response> {
     try {
