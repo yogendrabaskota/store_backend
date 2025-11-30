@@ -12,6 +12,9 @@ import productRoute from "./modules/product/route/product.route";
 import inventoryRoute from "./modules/inventory/route/inventory.route";
 import saleRoute from "./modules/sale/route/sale.route";
 import auditLogRoute from "./modules/auditLog/route/auditLog.route";
+import dashboardRoute from "./modules/dashboard/route/dashboard.route";
+import reportRoute from "./modules/report/route/report.route";
+import settingsRoute from "./modules/settings/route/system.route";
 
 // Load environment variables
 dotenv.config();
@@ -61,6 +64,9 @@ app.use("/api", productRoute);
 app.use("/api", inventoryRoute);
 app.use("/api", saleRoute);
 app.use("/api", auditLogRoute);
+app.use("/api", dashboardRoute);
+app.use("/api", reportRoute);
+app.use("/api", settingsRoute);
 
 // ---------------------------
 // Default error handler
