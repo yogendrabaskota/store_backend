@@ -1,6 +1,6 @@
 import { Response } from "express";
 import prisma from "../../../config/prisma";
-import { sendResponse } from "../../../globals/helper";
+import { createAuditLog, sendResponse } from "../../../globals/helper";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import {
   InventoryLogType,
@@ -122,6 +122,24 @@ class ProductController {
           },
         });
       }
+      await createAuditLog(
+        userId,
+        {
+          action: "PRODUCT_CREATE",
+          description: `Created new product: ${name} (SKU: ${sku})`,
+          resource: "Product",
+          resourceId: newProduct.id,
+          newData: {
+            name,
+            sku,
+            price,
+            costPrice,
+            categoryId,
+            quantity,
+          },
+        },
+        req
+      );
 
       return sendResponse(res, 201, "Product created successfully", newProduct);
     } catch (error) {
@@ -440,6 +458,21 @@ class ProductController {
           return sendResponse(res, 404, "Category not found or inactive");
         }
       }
+      const oldProductData = {
+        name: existingProduct.name,
+        description: existingProduct.description,
+        price: existingProduct.price,
+        costPrice: existingProduct.costPrice,
+        sku: existingProduct.sku,
+        barcode: existingProduct.barcode,
+        minStock: existingProduct.minStock,
+        maxStock: existingProduct.maxStock,
+        categoryId: existingProduct.categoryId,
+        status: existingProduct.status,
+        imageUrl: existingProduct.imageUrl,
+        weight: existingProduct.weight,
+        dimensions: existingProduct.dimensions,
+      };
 
       // Update product
       const updatedProduct = await prisma.product.update({
@@ -462,6 +495,36 @@ class ProductController {
         },
         select: this.getProductSelectFields(),
       });
+      await createAuditLog(
+        userId,
+        {
+          action: "PRODUCT_UPDATE",
+          description: `Updated product: ${name}`,
+          resource: "Product",
+          resourceId: id,
+          oldData: oldProductData,
+          newData: {
+            name: name || existingProduct.name,
+            description: description || existingProduct.description,
+            price: price || existingProduct.price,
+            costPrice: costPrice || existingProduct.costPrice,
+            sku: sku || existingProduct.sku,
+            barcode: barcode || existingProduct.barcode,
+            minStock: minStock || existingProduct.minStock,
+            maxStock: maxStock || existingProduct.maxStock,
+            categoryId: categoryId || existingProduct.categoryId,
+            status: status || existingProduct.status,
+            imageUrl:
+              imageUrl !== undefined ? imageUrl : existingProduct.imageUrl,
+            weight: weight !== undefined ? weight : existingProduct.weight,
+            dimensions:
+              dimensions !== undefined
+                ? dimensions
+                : existingProduct.dimensions,
+          },
+        },
+        req
+      );
 
       return sendResponse(
         res,
@@ -574,6 +637,18 @@ class ProductController {
             performedById: userId,
           },
         });
+        await createAuditLog(
+          userId,
+          {
+            action: "STOCK_UPDATE",
+            description: `${type} - ${quantity} units. Reason: ${reason}`,
+            resource: "Product",
+            resourceId: id,
+            oldData: { quantity: previousStock },
+            newData: { quantity: newStock },
+          },
+          req
+        );
 
         return updatedProduct;
       });
@@ -663,6 +738,12 @@ class ProductController {
           "Cannot delete product with associated sales"
         );
       }
+      const productData = {
+        name: productWithSales.name,
+        sku: productWithSales.sku,
+        quantity: productWithSales.quantity,
+        isActive: productWithSales.isActive,
+      };
 
       // Soft delete
       await prisma.product.update({
@@ -672,6 +753,18 @@ class ProductController {
           updatedAt: new Date(),
         },
       });
+      await createAuditLog(
+        userId,
+        {
+          action: "PRODUCT_DELETE",
+          description: `Soft deleted product: ${productWithSales.name} (SKU: ${productWithSales.sku})`,
+          resource: "Product",
+          resourceId: id,
+          oldData: productData,
+          newData: { isActive: false },
+        },
+        req
+      );
 
       return sendResponse(res, 200, "Product deleted successfully");
     } catch (error) {
@@ -788,10 +881,6 @@ class ProductController {
       const limitNum = Math.min(50, Math.max(1, parseInt(limit as string)));
       const skip = (pageNum - 1) * limitNum;
 
-      // -------------------------------
-      // RAW QUERY (Because column-to-column comparison is needed)
-      // -------------------------------
-
       const products = await prisma.$queryRawUnsafe<any[]>(`
       SELECT *
       FROM "Product"
@@ -838,6 +927,15 @@ class ProductController {
           limit: limitNum,
         },
       };
+      await createAuditLog(
+        req.user?.id || "SYSTEM",
+        {
+          action: "LOW_STOCK_VIEW",
+          description: "Viewed low stock products report",
+          resource: "Product",
+        },
+        req
+      );
 
       return sendResponse(
         res,

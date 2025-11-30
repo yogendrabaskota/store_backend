@@ -3,7 +3,7 @@ import { Response } from "express";
 import prisma from "../../../config/prisma";
 import { InventoryLogType, Prisma } from "../../../generated/prisma";
 import { AuthRequest } from "../../../middleware/auth.middleware";
-import { sendResponse } from "../../../globals/helper";
+import { createAuditLog, sendResponse } from "../../../globals/helper";
 
 export class InventoryController {
   async stockIn(req: AuthRequest, res: Response): Promise<Response> {
@@ -85,6 +85,21 @@ export class InventoryController {
             },
           },
         });
+        await createAuditLog(
+          userId,
+          {
+            action: "STOCK_IN",
+            description: `Added ${quantity} units to ${result.product.name}`,
+            resource: "Product",
+            resourceId: productId,
+            oldData: { quantity: previousStock },
+            newData: {
+              quantity: newStock,
+              ...(costPrice && { costPrice }),
+            },
+          },
+          req
+        );
 
         return {
           product: updatedProduct,
@@ -183,6 +198,18 @@ export class InventoryController {
             },
           },
         });
+        await createAuditLog(
+          userId,
+          {
+            action: "STOCK_OUT",
+            description: `Removed ${quantity} units from ${result.product.name})`,
+            resource: "Product",
+            resourceId: productId,
+            oldData: { quantity: previousStock },
+            newData: { quantity: newStock },
+          },
+          req
+        );
 
         return {
           product: updatedProduct,
@@ -284,6 +311,18 @@ export class InventoryController {
             },
           },
         });
+        await createAuditLog(
+          userId,
+          {
+            action: "STOCK_ADJUSTMENT",
+            description: `Adjusted stock from ${previousStock} to ${quantity} units for ${result.product.name}`,
+            resource: "Product",
+            resourceId: productId,
+            oldData: { quantity: previousStock },
+            newData: { quantity: newStock },
+          },
+          req
+        );
 
         return {
           product: updatedProduct,
@@ -413,6 +452,15 @@ export class InventoryController {
           limit: limitNum,
         },
       };
+      await createAuditLog(
+        req.user?.id || "SYSTEM",
+        {
+          action: "INVENTORY_LOGS_VIEW",
+          description: "Viewed inventory logs with filters",
+          resource: "Inventory",
+        },
+        req
+      );
 
       return sendResponse(
         res,
@@ -528,6 +576,16 @@ export class InventoryController {
           limit: limitNum,
         },
       };
+      await createAuditLog(
+        req.user?.id || "SYSTEM",
+        {
+          action: "PRODUCT_INVENTORY_LOGS_VIEW",
+          description: `Viewed inventory logs for product: ${product.name}`,
+          resource: "Product",
+          resourceId: productId,
+        },
+        req
+      );
 
       return sendResponse(
         res,
@@ -594,6 +652,16 @@ export class InventoryController {
         return sendResponse(res, 404, "Inventory log not found");
       }
 
+      await createAuditLog(
+        req.user?.id || "SYSTEM",
+        {
+          action: "INVENTORY_LOG_DETAIL_VIEW",
+          description: `Viewed inventory log details for ${log.product?.name}`,
+          resource: "InventoryLog",
+          resourceId: logId,
+        },
+        req
+      );
       return sendResponse(
         res,
         200,
@@ -655,6 +723,16 @@ export class InventoryController {
             performedById: userId,
             saleId,
           },
+        });
+        await createAuditLog(userId, {
+          action: type === "SALE" ? "SALE_STOCK_UPDATE" : "RETURN_STOCK_UPDATE",
+          description: `${
+            type === "SALE" ? "Sold" : "Returned"
+          } ${quantity} units of product for sale ${saleId}`,
+          resource: "Product",
+          resourceId: productId,
+          oldData: { quantity: previousStock },
+          newData: { quantity: newStock },
         });
       });
     } catch (error) {
@@ -774,6 +852,15 @@ export class InventoryController {
         stockMovement,
         recentActivity: recentLogs,
       };
+      await createAuditLog(
+        req.user?.id || "SYSTEM",
+        {
+          action: "INVENTORY_DASHBOARD_VIEW",
+          description: "Viewed inventory dashboard analytics",
+          resource: "Inventory",
+        },
+        req
+      );
 
       return sendResponse(
         res,

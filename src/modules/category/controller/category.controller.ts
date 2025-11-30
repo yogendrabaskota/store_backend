@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { sendResponse } from "../../../globals/helper";
+import { createAuditLog, sendResponse } from "../../../globals/helper";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import prisma from "../../../config/prisma";
 import { Prisma } from "../../../generated/prisma";
@@ -58,6 +58,20 @@ class CategoryController {
           },
         },
       });
+      await createAuditLog(
+        userId,
+        {
+          action: "CATEGORY_CREATE",
+          description: `Created new category: ${name}`,
+          resource: "Category",
+          resourceId: newCategory.id,
+          newData: {
+            name: name.trim(),
+            description: description.trim(),
+          },
+        },
+        req
+      );
 
       return sendResponse(
         res,
@@ -262,6 +276,11 @@ class CategoryController {
       if (!existingCategory) {
         return sendResponse(res, 404, "Category not found");
       }
+      const oldCategoryData = {
+        name: existingCategory.name,
+        description: existingCategory.description,
+        isActive: existingCategory.isActive,
+      };
 
       // Check for duplicate name
       if (name && name !== existingCategory.name) {
@@ -308,6 +327,23 @@ class CategoryController {
           },
         },
       });
+      await createAuditLog(
+        userId,
+        {
+          action: "CATEGORY_UPDATE",
+          description: `Updated category: ${existingCategory.name}`,
+          resource: "Category",
+          resourceId: id,
+          oldData: oldCategoryData,
+          newData: {
+            name: name?.trim() || existingCategory.name,
+            description: description?.trim() || existingCategory.description,
+            isActive:
+              isActive !== undefined ? isActive : existingCategory.isActive,
+          },
+        },
+        req
+      );
 
       return sendResponse(
         res,
@@ -370,6 +406,12 @@ class CategoryController {
           "Cannot delete category with active products"
         );
       }
+      const categoryData = {
+        name: categoryWithProducts.name,
+        description: categoryWithProducts.description,
+        isActive: categoryWithProducts.isActive,
+        productCount: categoryWithProducts.products.length,
+      };
 
       // Soft delete by setting isActive to false
       await prisma.category.update({
@@ -379,6 +421,18 @@ class CategoryController {
           updatedAt: new Date(),
         },
       });
+      await createAuditLog(
+        userId,
+        {
+          action: "CATEGORY_DELETE",
+          description: `Soft deleted category: ${categoryWithProducts.name}`,
+          resource: "Category",
+          resourceId: id,
+          oldData: categoryData,
+          newData: { isActive: false },
+        },
+        req
+      );
 
       return sendResponse(res, 200, "Category deleted successfully");
     } catch (error) {
@@ -497,6 +551,21 @@ class CategoryController {
           },
         },
       });
+      // After successful activation/deactivation:
+      await createAuditLog(
+        userId,
+        {
+          action: isActive ? "CATEGORY_ACTIVATE" : "CATEGORY_DEACTIVATE",
+          description: `${isActive ? "Activated" : "Deactivated"} category: ${
+            existingCategory.name
+          }`,
+          resource: "Category",
+          resourceId: id,
+          oldData: { isActive: existingCategory.isActive },
+          newData: { isActive },
+        },
+        req
+      );
 
       const message = isActive
         ? "Category activated successfully"
@@ -695,6 +764,15 @@ class CategoryController {
           limit: limitNum,
         },
       };
+      await createAuditLog(
+        req.user?.id || "SYSTEM",
+        {
+          action: "CATEGORY_SEARCH",
+          description: `Searched categories with query: "${searchTerm}"`,
+          resource: "Category",
+        },
+        req
+      );
 
       return sendResponse(
         res,
