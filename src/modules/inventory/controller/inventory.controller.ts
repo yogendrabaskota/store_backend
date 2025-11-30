@@ -1,5 +1,4 @@
 import { Response } from "express";
-
 import prisma from "../../../config/prisma";
 import { InventoryLogType, Prisma } from "../../../generated/prisma";
 import { AuthRequest } from "../../../middleware/auth.middleware";
@@ -24,20 +23,38 @@ export class InventoryController {
         return sendResponse(res, 400, "Quantity must be greater than 0");
       }
 
+      // get product data for audit log
+      const product = await prisma.product.findUnique({
+        where: { id: productId, isActive: true },
+        select: {
+          id: true,
+          quantity: true,
+          name: true,
+          sku: true,
+          costPrice: true,
+        },
+      });
+
+      if (!product) {
+        return sendResponse(res, 404, "Product not found or inactive");
+      }
+
+      const previousStock = product.quantity;
+      const productName = product.name;
+      const productSku = product.sku;
+      const newStock = previousStock + quantity;
+
       // Use transaction for atomic operation
       const result = await prisma.$transaction(async (tx) => {
-        // Get current product with lock
-        const product = await tx.product.findUnique({
+        // Get current product with lock (again for transaction safety)
+        const lockedProduct = await tx.product.findUnique({
           where: { id: productId, isActive: true },
           select: { id: true, quantity: true, name: true, costPrice: true },
         });
 
-        if (!product) {
+        if (!lockedProduct) {
           throw new Error("Product not found or inactive");
         }
-
-        const previousStock = product.quantity;
-        const newStock = previousStock + quantity;
 
         // Update product stock and optionally cost price
         const updateData: any = { quantity: newStock };
@@ -85,27 +102,29 @@ export class InventoryController {
             },
           },
         });
-        await createAuditLog(
-          userId,
-          {
-            action: "STOCK_IN",
-            description: `Added ${quantity} units to ${result.product.name}`,
-            resource: "Product",
-            resourceId: productId,
-            oldData: { quantity: previousStock },
-            newData: {
-              quantity: newStock,
-              ...(costPrice && { costPrice }),
-            },
-          },
-          req
-        );
 
         return {
           product: updatedProduct,
           log: inventoryLog,
         };
       });
+
+      // Create audit log AFTER successful transaction
+      await createAuditLog(
+        userId,
+        {
+          action: "STOCK_IN",
+          description: `Added ${quantity} units to ${productName} (${productSku})`,
+          resource: "Product",
+          resourceId: productId,
+          oldData: { quantity: previousStock },
+          newData: {
+            quantity: newStock,
+            ...(costPrice && { costPrice }),
+          },
+        },
+        req
+      );
 
       return sendResponse(res, 200, "Stock added successfully", result);
     } catch (error) {
@@ -139,25 +158,41 @@ export class InventoryController {
         return sendResponse(res, 400, "Quantity must be greater than 0");
       }
 
+      // First get product data for audit log
+      const product = await prisma.product.findUnique({
+        where: { id: productId, isActive: true },
+        select: { id: true, quantity: true, name: true, sku: true },
+      });
+
+      if (!product) {
+        return sendResponse(res, 404, "Product not found or inactive");
+      }
+
+      const previousStock = product.quantity;
+      const productName = product.name;
+      const productSku = product.sku;
+
+      if (previousStock < quantity) {
+        return sendResponse(res, 400, "Insufficient stock");
+      }
+
+      const newStock = previousStock - quantity;
+
       // Use transaction for atomic operation
       const result = await prisma.$transaction(async (tx) => {
-        // Get current product with lock
-        const product = await tx.product.findUnique({
+        // Get current product with lock (again for transaction safety)
+        const lockedProduct = await tx.product.findUnique({
           where: { id: productId, isActive: true },
           select: { id: true, quantity: true, name: true },
         });
 
-        if (!product) {
+        if (!lockedProduct) {
           throw new Error("Product not found or inactive");
         }
 
-        const previousStock = product.quantity;
-
-        if (previousStock < quantity) {
+        if (lockedProduct.quantity < quantity) {
           throw new Error("Insufficient stock");
         }
-
-        const newStock = previousStock - quantity;
 
         // Update product stock
         const updatedProduct = await tx.product.update({
@@ -198,24 +233,26 @@ export class InventoryController {
             },
           },
         });
-        await createAuditLog(
-          userId,
-          {
-            action: "STOCK_OUT",
-            description: `Removed ${quantity} units from ${result.product.name})`,
-            resource: "Product",
-            resourceId: productId,
-            oldData: { quantity: previousStock },
-            newData: { quantity: newStock },
-          },
-          req
-        );
 
         return {
           product: updatedProduct,
           log: inventoryLog,
         };
       });
+
+      // Create audit log AFTER successful transaction
+      await createAuditLog(
+        userId,
+        {
+          action: "STOCK_OUT",
+          description: `Removed ${quantity} units from ${productName} (${productSku})`,
+          resource: "Product",
+          resourceId: productId,
+          oldData: { quantity: previousStock },
+          newData: { quantity: newStock },
+        },
+        req
+      );
 
       return sendResponse(res, 200, "Stock removed successfully", result);
     } catch (error) {
@@ -252,21 +289,35 @@ export class InventoryController {
         return sendResponse(res, 400, "Quantity cannot be negative");
       }
 
+      // First get product data for audit log
+      const product = await prisma.product.findUnique({
+        where: { id: productId, isActive: true },
+        select: { id: true, quantity: true, name: true, sku: true },
+      });
+
+      if (!product) {
+        return sendResponse(res, 404, "Product not found or inactive");
+      }
+
+      const previousStock = product.quantity;
+      const productName = product.name;
+      const productSku = product.sku;
+      const newStock = quantity;
+      const adjustmentQuantity = Math.abs(newStock - previousStock);
+      const logType: InventoryLogType =
+        newStock > previousStock ? "STOCK_IN" : "STOCK_OUT";
+
       // Use transaction for atomic operation
       const result = await prisma.$transaction(async (tx) => {
-        // Get current product with lock
-        const product = await tx.product.findUnique({
+        // Get current product with lock (again for transaction safety)
+        const lockedProduct = await tx.product.findUnique({
           where: { id: productId, isActive: true },
           select: { id: true, quantity: true, name: true },
         });
 
-        if (!product) {
+        if (!lockedProduct) {
           throw new Error("Product not found or inactive");
         }
-
-        const previousStock = product.quantity;
-        const newStock = quantity;
-        const adjustmentQuantity = Math.abs(newStock - previousStock);
 
         // Update product stock
         const updatedProduct = await tx.product.update({
@@ -278,10 +329,6 @@ export class InventoryController {
             quantity: true,
           },
         });
-
-        // Determine log type based on adjustment
-        const logType: InventoryLogType =
-          newStock > previousStock ? "STOCK_IN" : "STOCK_OUT";
 
         // Create inventory log
         const inventoryLog = await tx.inventoryLog.create({
@@ -311,18 +358,6 @@ export class InventoryController {
             },
           },
         });
-        await createAuditLog(
-          userId,
-          {
-            action: "STOCK_ADJUSTMENT",
-            description: `Adjusted stock from ${previousStock} to ${quantity} units for ${result.product.name}`,
-            resource: "Product",
-            resourceId: productId,
-            oldData: { quantity: previousStock },
-            newData: { quantity: newStock },
-          },
-          req
-        );
 
         return {
           product: updatedProduct,
@@ -333,6 +368,20 @@ export class InventoryController {
           },
         };
       });
+
+      // Create audit log AFTER successful transaction
+      await createAuditLog(
+        userId,
+        {
+          action: "STOCK_ADJUSTMENT",
+          description: `Adjusted stock from ${previousStock} to ${quantity} units for ${productName} (${productSku})`,
+          resource: "Product",
+          resourceId: productId,
+          oldData: { quantity: previousStock },
+          newData: { quantity: newStock },
+        },
+        req
+      );
 
       return sendResponse(res, 200, "Stock adjusted successfully", result);
     } catch (error) {
@@ -452,6 +501,7 @@ export class InventoryController {
           limit: limitNum,
         },
       };
+
       await createAuditLog(
         req.user?.id || "SYSTEM",
         {
@@ -576,6 +626,7 @@ export class InventoryController {
           limit: limitNum,
         },
       };
+
       await createAuditLog(
         req.user?.id || "SYSTEM",
         {
@@ -662,6 +713,7 @@ export class InventoryController {
         },
         req
       );
+
       return sendResponse(
         res,
         200,
@@ -682,27 +734,43 @@ export class InventoryController {
     type: "SALE" | "RETURN" = "SALE"
   ): Promise<void> {
     try {
+      // First get product data for audit log
+      const product = await prisma.product.findUnique({
+        where: { id: productId },
+        select: { id: true, quantity: true, name: true, sku: true },
+      });
+
+      if (!product) {
+        throw new Error(`Product ${productId} not found`);
+      }
+
+      const previousStock = product.quantity;
+      const productName = product.name;
+      const productSku = product.sku;
+      let newStock = previousStock;
+
+      if (type === "SALE") {
+        if (previousStock < quantity) {
+          throw new Error(`Insufficient stock for product ${productId}`);
+        }
+        newStock = previousStock - quantity;
+      } else if (type === "RETURN") {
+        newStock = previousStock + quantity;
+      }
+
       await prisma.$transaction(async (tx) => {
-        // Get current product with lock
-        const product = await tx.product.findUnique({
+        // Get current product with lock (again for transaction safety)
+        const lockedProduct = await tx.product.findUnique({
           where: { id: productId },
           select: { id: true, quantity: true },
         });
 
-        if (!product) {
+        if (!lockedProduct) {
           throw new Error(`Product ${productId} not found`);
         }
 
-        const previousStock = product.quantity;
-        let newStock = previousStock;
-
-        if (type === "SALE") {
-          if (previousStock < quantity) {
-            throw new Error(`Insufficient stock for product ${productId}`);
-          }
-          newStock = previousStock - quantity;
-        } else if (type === "RETURN") {
-          newStock = previousStock + quantity;
+        if (type === "SALE" && lockedProduct.quantity < quantity) {
+          throw new Error(`Insufficient stock for product ${productId}`);
         }
 
         // Update product stock
@@ -724,17 +792,23 @@ export class InventoryController {
             saleId,
           },
         });
-        await createAuditLog(userId, {
+      });
+
+      // Create audit log AFTER successful transaction
+      await createAuditLog(
+        userId,
+        {
           action: type === "SALE" ? "SALE_STOCK_UPDATE" : "RETURN_STOCK_UPDATE",
           description: `${
             type === "SALE" ? "Sold" : "Returned"
-          } ${quantity} units of product for sale ${saleId}`,
+          } ${quantity} units of ${productName} (${productSku}) for sale ${saleId}`,
           resource: "Product",
           resourceId: productId,
           oldData: { quantity: previousStock },
           newData: { quantity: newStock },
-        });
-      });
+        }
+        // Note: No req parameter for internal method
+      );
     } catch (error) {
       console.error("Create sale inventory log error:", error);
       throw error;
@@ -852,6 +926,7 @@ export class InventoryController {
         stockMovement,
         recentActivity: recentLogs,
       };
+
       await createAuditLog(
         req.user?.id || "SYSTEM",
         {
