@@ -1,0 +1,734 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const prisma_1 = __importDefault(require("../../../config/prisma"));
+const helper_1 = require("../../../globals/helper");
+const prisma_2 = require("../../../generated/prisma");
+class ProductController {
+    async createProduct(req, res) {
+        try {
+            const { name, description, price, costPrice, sku, barcode, quantity, minStock, maxStock, categoryId, imageUrl, weight, dimensions, } = req.body;
+            const userId = req.user?.id;
+            // Validation
+            if (!userId) {
+                return (0, helper_1.sendResponse)(res, 400, "Authentication required");
+            }
+            const requiredFields = [
+                "name",
+                "price",
+                "costPrice",
+                "sku",
+                "categoryId",
+            ];
+            const missingFields = requiredFields.filter((field) => !req.body[field]);
+            if (missingFields.length > 0) {
+                return (0, helper_1.sendResponse)(res, 400, `Missing required fields: ${missingFields.join(", ")}`);
+            }
+            if (parseFloat(price) <= 0 || parseFloat(costPrice) <= 0) {
+                return (0, helper_1.sendResponse)(res, 400, "Price and cost price must be greater than 0");
+            }
+            // Check for unique constraints
+            const [existingSku, existingBarcode, category] = await Promise.all([
+                prisma_1.default.product.findUnique({ where: { sku } }),
+                barcode ? prisma_1.default.product.findUnique({ where: { barcode } }) : null,
+                prisma_1.default.category.findFirst({
+                    where: {
+                        id: categoryId,
+                        isActive: true,
+                    },
+                }),
+            ]);
+            if (existingSku) {
+                return (0, helper_1.sendResponse)(res, 409, "Product with this SKU already exists");
+            }
+            if (existingBarcode) {
+                return (0, helper_1.sendResponse)(res, 409, "Product with this barcode already exists");
+            }
+            if (!category) {
+                return (0, helper_1.sendResponse)(res, 404, "Category not found or inactive");
+            }
+            // Create product
+            const newProduct = await prisma_1.default.product.create({
+                data: {
+                    name: name.trim(),
+                    description: description?.trim(),
+                    price,
+                    costPrice,
+                    sku: sku.trim(),
+                    barcode: barcode?.trim(),
+                    quantity: quantity || 0,
+                    minStock: minStock || 10,
+                    maxStock: maxStock || 100,
+                    categoryId,
+                    createdById: userId,
+                    imageUrl,
+                    weight,
+                    dimensions,
+                },
+                select: this.getProductSelectFields(),
+            });
+            // Create inventory log for initial stock
+            if (quantity > 0) {
+                await prisma_1.default.inventoryLog.create({
+                    data: {
+                        type: "STOCK_IN",
+                        quantity,
+                        previousStock: 0,
+                        newStock: quantity,
+                        reason: "Initial stock",
+                        productId: newProduct.id,
+                        performedById: userId,
+                    },
+                });
+            }
+            await (0, helper_1.createAuditLog)(userId, {
+                action: "PRODUCT_CREATE",
+                description: `Created new product: ${name} (SKU: ${sku})`,
+                resource: "Product",
+                resourceId: newProduct.id,
+                newData: {
+                    name,
+                    sku,
+                    price,
+                    costPrice,
+                    categoryId,
+                    quantity,
+                },
+            }, req);
+            return (0, helper_1.sendResponse)(res, 201, "Product created successfully", newProduct);
+        }
+        catch (error) {
+            console.error("Create product error:", error);
+            if (error instanceof prisma_2.Prisma.PrismaClientKnownRequestError) {
+                if (error.code === "P2002") {
+                    const field = error.meta?.target;
+                    return (0, helper_1.sendResponse)(res, 409, `Product with this ${field} already exists`);
+                }
+            }
+            return (0, helper_1.sendResponse)(res, 500, "Internal server error");
+        }
+    }
+    async getProducts(req, res) {
+        try {
+            const { page = 1, limit = 10, sortBy = "createdAt", sortOrder = "desc", search, categoryId, status, isActive = "true", minPrice, maxPrice, lowStock, } = req.query;
+            const pageNum = Math.max(1, parseInt(page));
+            const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+            const skip = (pageNum - 1) * limitNum;
+            // Build where clause
+            const where = {
+                isActive: isActive === "true",
+            };
+            // Search filter
+            if (search) {
+                where.OR = [
+                    { name: { contains: search, mode: "insensitive" } },
+                    { description: { contains: search, mode: "insensitive" } },
+                    { sku: { contains: search, mode: "insensitive" } },
+                    { barcode: { contains: search, mode: "insensitive" } },
+                ];
+            }
+            // Category filter
+            if (categoryId) {
+                where.categoryId = categoryId;
+            }
+            // Status filter
+            if (status) {
+                where.status = status;
+            }
+            // Price range filter
+            if (minPrice || maxPrice) {
+                where.price = {};
+                if (minPrice)
+                    where.price.gte = new prisma_2.Prisma.Decimal(minPrice);
+                if (maxPrice)
+                    where.price.lte = new prisma_2.Prisma.Decimal(maxPrice);
+            }
+            // Execute main queries in parallel
+            const [products, totalCount] = await Promise.all([
+                prisma_1.default.product.findMany({
+                    where,
+                    skip,
+                    take: limitNum,
+                    orderBy: { [sortBy]: sortOrder },
+                    select: this.getProductSelectFields(),
+                }),
+                prisma_1.default.product.count({ where }),
+            ]);
+            // ✅ JS-based low-stock filtering (Solution 1)
+            const lowStockProducts = products.filter((p) => p.quantity <= p.minStock);
+            const lowStockCount = lowStock === "true"
+                ? lowStockProducts.length
+                : await prisma_1.default.product.count({
+                    where: {
+                        ...where,
+                        quantity: 0,
+                    },
+                });
+            const totalPages = Math.ceil(totalCount / limitNum);
+            const responseData = {
+                products: lowStock === "true"
+                    ? lowStockProducts // return only low-stock items when filtered
+                    : products,
+                summary: {
+                    totalCount,
+                    lowStockCount: lowStockProducts.length,
+                    outOfStockCount: await prisma_1.default.product.count({
+                        where: { ...where, quantity: 0 },
+                    }),
+                },
+                pagination: {
+                    currentPage: pageNum,
+                    totalPages,
+                    totalCount,
+                    hasNext: pageNum < totalPages,
+                    hasPrev: pageNum > 1,
+                    limit: limitNum,
+                },
+            };
+            return (0, helper_1.sendResponse)(res, 200, "Products retrieved successfully", responseData);
+        }
+        catch (error) {
+            console.error("Get products error:", error);
+            return (0, helper_1.sendResponse)(res, 500, "Internal server error");
+        }
+    }
+    getProductSelectFields(minimal = false) {
+        const baseFields = {
+            id: true,
+            name: true,
+            description: true,
+            price: true,
+            costPrice: true,
+            sku: true,
+            barcode: true,
+            quantity: true,
+            minStock: true,
+            maxStock: true,
+            status: true,
+            isActive: true,
+            createdAt: true,
+            updatedAt: true,
+            imageUrl: true,
+            weight: true,
+            dimensions: true,
+        };
+        if (minimal) {
+            return baseFields;
+        }
+        return {
+            ...baseFields,
+            category: {
+                select: {
+                    id: true,
+                    name: true,
+                    isActive: true,
+                },
+            },
+            createdBy: {
+                select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                },
+            },
+            _count: {
+                select: {
+                    saleItems: true,
+                    inventoryLogs: true,
+                },
+            },
+        };
+    }
+    async getProductById(req, res) {
+        try {
+            const { id } = req.params;
+            if (!id) {
+                return (0, helper_1.sendResponse)(res, 400, "Product ID is required");
+            }
+            const product = await prisma_1.default.product.findUnique({
+                where: { id },
+                select: {
+                    ...this.getProductSelectFields(),
+                    inventoryLogs: {
+                        take: 20,
+                        orderBy: { createdAt: "desc" },
+                        select: {
+                            id: true,
+                            type: true,
+                            quantity: true,
+                            previousStock: true,
+                            newStock: true,
+                            reason: true,
+                            createdAt: true,
+                            performedBy: {
+                                select: {
+                                    id: true,
+                                    name: true,
+                                    email: true,
+                                },
+                            },
+                        },
+                    },
+                    saleItems: {
+                        take: 10,
+                        orderBy: { createdAt: "desc" },
+                        select: {
+                            id: true,
+                            quantity: true,
+                            unitPrice: true,
+                            totalPrice: true,
+                            createdAt: true,
+                            sale: {
+                                select: {
+                                    id: true,
+                                    saleNumber: true,
+                                    createdAt: true,
+                                },
+                            },
+                        },
+                    },
+                },
+            });
+            if (!product) {
+                return (0, helper_1.sendResponse)(res, 404, "Product not found");
+            }
+            return (0, helper_1.sendResponse)(res, 200, "Product retrieved successfully", product);
+        }
+        catch (error) {
+            console.error("Get product by ID error:", error);
+            return (0, helper_1.sendResponse)(res, 500, "Internal server error");
+        }
+    }
+    async updateProduct(req, res) {
+        try {
+            const { id } = req.params;
+            const { name, description, price, costPrice, sku, barcode, minStock, maxStock, categoryId, status, imageUrl, weight, dimensions, } = req.body;
+            const userId = req.user?.id;
+            if (!userId) {
+                return (0, helper_1.sendResponse)(res, 400, "Authentication required");
+            }
+            if (!id) {
+                return (0, helper_1.sendResponse)(res, 400, "Product ID is required");
+            }
+            // Check if product exists
+            const existingProduct = await prisma_1.default.product.findUnique({
+                where: { id },
+            });
+            if (!existingProduct) {
+                return (0, helper_1.sendResponse)(res, 404, "Product not found");
+            }
+            // Check unique constraints if updating SKU or barcode
+            if (sku && sku !== existingProduct.sku) {
+                const existingSku = await prisma_1.default.product.findUnique({ where: { sku } });
+                if (existingSku) {
+                    return (0, helper_1.sendResponse)(res, 409, "Product with this SKU already exists");
+                }
+            }
+            if (barcode && barcode !== existingProduct.barcode) {
+                const existingBarcode = await prisma_1.default.product.findUnique({
+                    where: { barcode },
+                });
+                if (existingBarcode) {
+                    return (0, helper_1.sendResponse)(res, 409, "Product with this barcode already exists");
+                }
+            }
+            // Check category if updating
+            if (categoryId && categoryId !== existingProduct.categoryId) {
+                const category = await prisma_1.default.category.findFirst({
+                    where: { id: categoryId, isActive: true },
+                });
+                if (!category) {
+                    return (0, helper_1.sendResponse)(res, 404, "Category not found or inactive");
+                }
+            }
+            const oldProductData = {
+                name: existingProduct.name,
+                description: existingProduct.description,
+                price: existingProduct.price,
+                costPrice: existingProduct.costPrice,
+                sku: existingProduct.sku,
+                barcode: existingProduct.barcode,
+                minStock: existingProduct.minStock,
+                maxStock: existingProduct.maxStock,
+                categoryId: existingProduct.categoryId,
+                status: existingProduct.status,
+                imageUrl: existingProduct.imageUrl,
+                weight: existingProduct.weight,
+                dimensions: existingProduct.dimensions,
+            };
+            // Update product
+            const updatedProduct = await prisma_1.default.product.update({
+                where: { id },
+                data: {
+                    ...(name && { name: name.trim() }),
+                    ...(description && { description: description.trim() }),
+                    ...(price && { price }),
+                    ...(costPrice && { costPrice }),
+                    ...(sku && { sku: sku.trim() }),
+                    ...(barcode && { barcode: barcode.trim() }),
+                    ...(minStock && { minStock }),
+                    ...(maxStock && { maxStock }),
+                    ...(categoryId && { categoryId }),
+                    ...(status && { status }),
+                    ...(imageUrl !== undefined && { imageUrl }),
+                    ...(weight !== undefined && { weight }),
+                    ...(dimensions !== undefined && { dimensions }),
+                    updatedAt: new Date(),
+                },
+                select: this.getProductSelectFields(),
+            });
+            await (0, helper_1.createAuditLog)(userId, {
+                action: "PRODUCT_UPDATE",
+                description: `Updated product: ${name}`,
+                resource: "Product",
+                resourceId: id,
+                oldData: oldProductData,
+                newData: {
+                    name: name || existingProduct.name,
+                    description: description || existingProduct.description,
+                    price: price || existingProduct.price,
+                    costPrice: costPrice || existingProduct.costPrice,
+                    sku: sku || existingProduct.sku,
+                    barcode: barcode || existingProduct.barcode,
+                    minStock: minStock || existingProduct.minStock,
+                    maxStock: maxStock || existingProduct.maxStock,
+                    categoryId: categoryId || existingProduct.categoryId,
+                    status: status || existingProduct.status,
+                    imageUrl: imageUrl !== undefined ? imageUrl : existingProduct.imageUrl,
+                    weight: weight !== undefined ? weight : existingProduct.weight,
+                    dimensions: dimensions !== undefined
+                        ? dimensions
+                        : existingProduct.dimensions,
+                },
+            }, req);
+            return (0, helper_1.sendResponse)(res, 200, "Product updated successfully", updatedProduct);
+        }
+        catch (error) {
+            console.error("Update product error:", error);
+            if (error instanceof prisma_2.Prisma.PrismaClientKnownRequestError) {
+                if (error.code === "P2025") {
+                    return (0, helper_1.sendResponse)(res, 404, "Product not found");
+                }
+                if (error.code === "P2002") {
+                    const field = error.meta?.target;
+                    return (0, helper_1.sendResponse)(res, 409, `Product with this ${field} already exists`);
+                }
+            }
+            return (0, helper_1.sendResponse)(res, 500, "Internal server error");
+        }
+    }
+    async updateStock(req, res) {
+        try {
+            const { id } = req.params;
+            const { quantity, type, reason = "Stock adjustment" } = req.body;
+            const userId = req.user?.id;
+            if (!userId) {
+                return (0, helper_1.sendResponse)(res, 400, "Authentication required");
+            }
+            if (!id) {
+                return (0, helper_1.sendResponse)(res, 400, "Product ID is required");
+            }
+            if (!quantity || typeof quantity !== "number") {
+                return (0, helper_1.sendResponse)(res, 400, "Valid quantity is required");
+            }
+            if (quantity <= 0) {
+                return (0, helper_1.sendResponse)(res, 400, "Quantity must be greater than 0");
+            }
+            const validTypes = [
+                "STOCK_IN",
+                "STOCK_OUT",
+                "ADJUSTMENT",
+            ];
+            if (!validTypes.includes(type)) {
+                return (0, helper_1.sendResponse)(res, 400, "Invalid inventory log type");
+            }
+            // Use transaction for atomic operation
+            const result = await prisma_1.default.$transaction(async (tx) => {
+                // Get current product with lock
+                const product = await tx.product.findUnique({
+                    where: { id },
+                    select: { id: true, quantity: true, name: true },
+                });
+                if (!product) {
+                    throw new Error("Product not found");
+                }
+                const previousStock = product.quantity;
+                let newStock = previousStock;
+                // Calculate new stock based on type
+                switch (type) {
+                    case "STOCK_IN":
+                        newStock = previousStock + quantity;
+                        break;
+                    case "STOCK_OUT":
+                        if (previousStock < quantity) {
+                            throw new Error("Insufficient stock");
+                        }
+                        newStock = previousStock - quantity;
+                        break;
+                    case "ADJUSTMENT":
+                        newStock = quantity;
+                        break;
+                }
+                if (newStock < 0) {
+                    throw new Error("Stock cannot be negative");
+                }
+                // Update product stock
+                const updatedProduct = await tx.product.update({
+                    where: { id },
+                    data: { quantity: newStock },
+                    select: this.getProductSelectFields(),
+                });
+                // Create inventory log
+                await tx.inventoryLog.create({
+                    data: {
+                        type,
+                        quantity,
+                        previousStock,
+                        newStock,
+                        reason,
+                        productId: id,
+                        performedById: userId,
+                    },
+                });
+                await (0, helper_1.createAuditLog)(userId, {
+                    action: "STOCK_UPDATE",
+                    description: `${type} - ${quantity} units. Reason: ${reason}`,
+                    resource: "Product",
+                    resourceId: id,
+                    oldData: { quantity: previousStock },
+                    newData: { quantity: newStock },
+                }, req);
+                return updatedProduct;
+            });
+            return (0, helper_1.sendResponse)(res, 200, "Stock updated successfully", result);
+        }
+        catch (error) {
+            console.error("Update stock error:", error);
+            if (error instanceof Error) {
+                if (error.message === "Product not found") {
+                    return (0, helper_1.sendResponse)(res, 404, "Product not found");
+                }
+                if (error.message === "Insufficient stock") {
+                    return (0, helper_1.sendResponse)(res, 400, "Insufficient stock");
+                }
+                if (error.message === "Stock cannot be negative") {
+                    return (0, helper_1.sendResponse)(res, 400, "Stock cannot be negative");
+                }
+            }
+            return (0, helper_1.sendResponse)(res, 500, "Internal server error");
+        }
+    }
+    async deleteProduct(req, res) {
+        try {
+            const { id } = req.params;
+            const userId = req.user?.id;
+            if (!userId) {
+                return (0, helper_1.sendResponse)(res, 400, "Authentication required");
+            }
+            if (!id) {
+                return (0, helper_1.sendResponse)(res, 400, "Product ID is required");
+            }
+            // Check if product exists and has active sales
+            //   const productWithSales = await prisma.product.findUnique({
+            //     where: { id },
+            //     include: {
+            //       saleItems: {
+            //         take: 1,
+            //         include: {
+            //           sale: {
+            //             where: { status: { in: ["PENDING", "COMPLETED"] } },
+            //           },
+            //         },
+            //       },
+            //     },
+            //   });
+            //   if (!productWithSales) {
+            //     return sendResponse(res, 404, "Product not found");
+            //   }
+            //   if (productWithSales.saleItems.length > 0) {
+            //     return sendResponse(
+            //       res,
+            //       400,
+            //       "Cannot delete product with associated sales"
+            //     );
+            //   }
+            // Get product first
+            const productWithSales = await prisma_1.default.product.findUnique({
+                where: { id },
+            });
+            if (!productWithSales) {
+                return (0, helper_1.sendResponse)(res, 404, "Product not found");
+            }
+            // Check if product has any active sales (PENDING or COMPLETED)
+            const activeSale = await prisma_1.default.saleItem.findFirst({
+                where: {
+                    productId: id,
+                    sale: {
+                        status: { in: ["PENDING", "COMPLETED"] },
+                    },
+                },
+            });
+            if (activeSale) {
+                return (0, helper_1.sendResponse)(res, 400, "Cannot delete product with associated sales");
+            }
+            const productData = {
+                name: productWithSales.name,
+                sku: productWithSales.sku,
+                quantity: productWithSales.quantity,
+                isActive: productWithSales.isActive,
+            };
+            // Soft delete
+            await prisma_1.default.product.update({
+                where: { id },
+                data: {
+                    isActive: false,
+                    updatedAt: new Date(),
+                },
+            });
+            await (0, helper_1.createAuditLog)(userId, {
+                action: "PRODUCT_DELETE",
+                description: `Soft deleted product: ${productWithSales.name} (SKU: ${productWithSales.sku})`,
+                resource: "Product",
+                resourceId: id,
+                oldData: productData,
+                newData: { isActive: false },
+            }, req);
+            return (0, helper_1.sendResponse)(res, 200, "Product deleted successfully");
+        }
+        catch (error) {
+            console.error("Delete product error:", error);
+            if (error instanceof prisma_2.Prisma.PrismaClientKnownRequestError) {
+                if (error.code === "P2025") {
+                    return (0, helper_1.sendResponse)(res, 404, "Product not found");
+                }
+            }
+            return (0, helper_1.sendResponse)(res, 500, "Internal server error");
+        }
+    }
+    async searchProducts(req, res) {
+        try {
+            const { q: searchQuery, page = 1, limit = 20, inStock = "true", } = req.query;
+            if (!searchQuery?.toString().trim()) {
+                return (0, helper_1.sendResponse)(res, 400, "Search query is required");
+            }
+            const searchTerm = searchQuery.toString().trim();
+            if (searchTerm.length < 2) {
+                return (0, helper_1.sendResponse)(res, 400, "Search term must be at least 2 characters long");
+            }
+            const pageNum = Math.max(1, parseInt(page));
+            const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+            const skip = (pageNum - 1) * limitNum;
+            const where = {
+                isActive: true,
+                OR: [
+                    { name: { contains: searchTerm, mode: "insensitive" } },
+                    { description: { contains: searchTerm, mode: "insensitive" } },
+                    { sku: { contains: searchTerm, mode: "insensitive" } },
+                ],
+            };
+            if (inStock === "true") {
+                where.quantity = { gt: 0 };
+            }
+            const [products, totalCount] = await Promise.all([
+                prisma_1.default.product.findMany({
+                    where,
+                    skip,
+                    take: limitNum,
+                    //   orderBy: [
+                    //     {
+                    //       _relevance: {
+                    //         fields: ["name"],
+                    //         search: searchTerm,
+                    //         sort: "desc",
+                    //       },
+                    //     },
+                    //     { createdAt: "desc" },
+                    //   ],
+                    orderBy: { createdAt: "desc" },
+                    select: this.getProductSelectFields(true), // Minimal fields for search
+                }),
+                prisma_1.default.product.count({ where }),
+            ]);
+            const totalPages = Math.ceil(totalCount / limitNum);
+            const responseData = {
+                products,
+                searchMeta: {
+                    query: searchTerm,
+                    totalResults: totalCount,
+                },
+                pagination: {
+                    currentPage: pageNum,
+                    totalPages,
+                    hasNext: pageNum < totalPages,
+                    hasPrev: pageNum > 1,
+                    limit: limitNum,
+                },
+            };
+            return (0, helper_1.sendResponse)(res, 200, "Search completed successfully", responseData);
+        }
+        catch (error) {
+            console.error("Search products error:", error);
+            return (0, helper_1.sendResponse)(res, 500, "Internal server error");
+        }
+    }
+    async getLowStockProducts(req, res) {
+        try {
+            const { page = 1, limit = 20 } = req.query;
+            const pageNum = Math.max(1, parseInt(page));
+            const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+            const skip = (pageNum - 1) * limitNum;
+            const products = await prisma_1.default.$queryRawUnsafe(`
+      SELECT *
+      FROM "Product"
+      WHERE "isActive" = true
+      AND "quantity" <= "minStock"
+      ORDER BY "quantity" ASC
+      OFFSET ${skip}
+      LIMIT ${limitNum}
+    `);
+            const totalCountResult = await prisma_1.default.$queryRawUnsafe(`
+      SELECT COUNT(*)::int AS count
+      FROM "Product"
+      WHERE "isActive" = true
+      AND "quantity" <= "minStock"
+    `);
+            const totalCount = totalCountResult[0]?.count || 0;
+            const outOfStockResult = await prisma_1.default.$queryRawUnsafe(`
+      SELECT COUNT(*)::int AS count
+      FROM "Product"
+      WHERE "isActive" = true
+      AND "quantity" = 0
+    `);
+            const outOfStock = outOfStockResult[0]?.count || 0;
+            const totalPages = Math.ceil(totalCount / limitNum);
+            const responseData = {
+                products,
+                summary: {
+                    totalLowStock: totalCount,
+                    outOfStock,
+                },
+                pagination: {
+                    currentPage: pageNum,
+                    totalPages,
+                    hasNext: pageNum < totalPages,
+                    hasPrev: pageNum > 1,
+                    limit: limitNum,
+                },
+            };
+            await (0, helper_1.createAuditLog)(req.user?.id || "SYSTEM", {
+                action: "LOW_STOCK_VIEW",
+                description: "Viewed low stock products report",
+                resource: "Product",
+            }, req);
+            return (0, helper_1.sendResponse)(res, 200, "Low stock products retrieved successfully", responseData);
+        }
+        catch (error) {
+            console.error("Get low stock products error:", error);
+            return (0, helper_1.sendResponse)(res, 500, "Internal server error");
+        }
+    }
+}
+exports.default = new ProductController();
+//# sourceMappingURL=product.controller.js.map
