@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "nodemon --watch src --exec ts-node server.ts",
     "start": "node dist/server.js",
-    "build": "tsc && prisma generate",
+    "build": "tsc && prisma generate && cp -r src/generated dist/src/",
     "clean": "rimraf dist",
     "build:clean": "npm run clean && npm run build",
     "prisma:generate": "prisma generate",

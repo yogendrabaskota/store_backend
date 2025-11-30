@@ -1,9 +1,11 @@
 import { Response } from "express";
 import { PaymentMethod, Prisma, SaleStatus } from "../../../generated/prisma";
+// import {  Prisma } from "@prisma/client";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { createAuditLog, sendResponse } from "../../../globals/helper";
 import prisma from "../../../config/prisma";
 import inventoryController from "../../inventory/controller/inventory.controller";
+// import { SaleStatus } from "../../../globals/types";
 
 export class SaleController {
   private generateSaleNumber(): string {

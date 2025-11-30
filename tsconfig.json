@@ -30,6 +30,6 @@
     // Remove react-specific options since this is a Node.js project:
     // "jsx": "react-jsx",  // REMOVE THIS LINE
   },
-  "include": ["server.ts", "src/**/*"],
+  "include": ["server.ts", "src/**/*", "src/generated/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
